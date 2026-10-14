@@ -1,0 +1,377 @@
+{
+  "name": "NGP-048 Bug Report Writer Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "fafa030c-aa77-44c7-94c2-f66541d0b36e",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -176,
+        208
+      ],
+      "webhookId": "d65b74b4-d169-4d35-ac80-a43558387c4f",
+      "credentials": {
+        "telegramApi": {
+          "id": "M4a2aWIxNpJdHgS3",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const upd = $input.first().json;\nconst msg = upd.message || {};\nconst raw = (msg.text || '').trim();\nif (!raw || raw.startsWith('/')) return [];   // ignore non-text / bot commands\n\n// S5 - data minimisation: mask / strip personal data BEFORE the LLM sees it\nconst clean = raw\n  .replace(/\\b(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\.\\d{1,3}\\b/g, '$1.xxx')                 // mask last IPv4 octet\n  .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/g, '[EMAIL]')            // emails\n  .replace(/\\beyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\b/g, '[JWT]')      // JWTs\n  .replace(/(Bearer\\s+)[A-Za-z0-9\\-._~+\\/]+=*/gi, '$1[TOKEN]')                      // bearer tokens\n  .replace(/(?<![\\w.])\\+?\\d[\\d\\s().-]{8,}\\d(?![\\w.])/g, '[PHONE]');                 // phone numbers\n\n// Only these fields travel on. Telegram username / first name / etc. are dropped.\nreturn [{\n  json: {\n    chat_id: msg.chat.id,\n    update_id: upd.update_id,\n    raw_text: raw,                 // BEFORE (kept only for the before/after proof, never sent to LLM)\n    clean_text: clean,             // AFTER  (this is all the AI sees)\n    dedupe_key: clean.toLowerCase().replace(/\\s+/g, ' ')\n  }\n}];"
+      },
+      "id": "b4b7f23c-2a6b-4838-be0f-67a96bc090cc",
+      "name": "Sanitize (S5)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "wm7Cmy4Q1ZbDbVpr",
+          "mode": "list",
+          "cachedResultName": "ngp048_reports"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "dedupe_key",
+              "keyValue": "={{ $json.dedupe_key }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "bfdffe8c-6c4b-40b2-85d1-83260166a566",
+      "name": "Lookup Duplicate (F2)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -80,
+        672
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.id === undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8ed8e838-dd70-4d1a-9de1-2188f1461827",
+      "name": "Is New Finding?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        240,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "wm7Cmy4Q1ZbDbVpr",
+          "mode": "list",
+          "cachedResultName": "ngp048_reports"
+        },
+        "returnAll": true
+      },
+      "id": "953df9f4-a51a-4fbf-a7e7-23c47f779bab",
+      "name": "Count Reports",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        432,
+        384
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Sanitize (S5)').item.json.clean_text }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a senior bug bounty triage analyst. You receive short raw finding notes from a security tester. Turn them into a professional HackerOne-style report. Return a title, a severity (Critical/High/Medium/Low/Informational), a one-line summary, numbered steps to reproduce, the impact and a suggested fix. Use only the information in the notes; placeholders like [EMAIL] or x.x.x.xxx are intentional masking, keep them as is. Do not invent endpoints, credentials or personal data."
+        }
+      },
+      "id": "46f7cf6f-df09-46be-8f56-dcf915ffc9ce",
+      "name": "Bug Report Writer Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        672,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-lite",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "b7186298-b20f-48c9-a49a-fbf2ee015272",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        576
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"title\": \"IDOR on /api/orders/48 exposes other users' orders\",\n  \"severity\": \"High\",\n  \"summary\": \"Any authenticated user can read another user's order data by changing the order ID.\",\n  \"steps_to_reproduce\": [\n    \"Log in as user A and note the order ID in /api/orders/48\",\n    \"Replace the ID with an order belonging to user B\",\n    \"Observe that user B's order data is returned\"\n  ],\n  \"impact\": \"Unauthorized access to other customers' personal and order data.\",\n  \"suggested_fix\": \"Enforce object-level authorization so the order owner must match the authenticated user.\"\n}",
+        "autoFix": true
+      },
+      "id": "2b31a8ac-6a59-4ec1-8040-5b04ec2d9160",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        800,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const o = $input.first().json.output;\nconst src = $('Sanitize (S5)').first().json;\n\n// Sequence number: NGP-048-001, 002, ...\nconst existing = $('Count Reports').all().filter(i => i.json.report_id).length;\nconst reportId = 'NGP-048-' + String(existing + 1).padStart(3, '0');\n\nconst esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst ist = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) + ' IST';\nconst steps = (o.steps_to_reproduce || []).map((s, i) => `${i + 1}. ${esc(s)}`).join('\\n');\n\nconst alertLine = `🔴 NGP-048 | exec #${$execution.id} | ${ist} | ${o.severity} | ${o.summary}`;\n\nconst text =\n`<b>${esc(alertLine)}</b>\n\n<b>Report ID:</b> ${reportId}\n<b>Title:</b> ${esc(o.title)}\n<b>Severity:</b> ${esc(o.severity)}\n\n<b>## Summary</b>\n${esc(o.summary)}\n\n<b>## Steps To Reproduce</b>\n${steps}\n\n<b>## Impact</b>\n${esc(o.impact)}\n\n<b>## Suggested Fix</b>\n${esc(o.suggested_fix)}`;\n\nreturn [{ json: {\n  report_id: reportId,\n  title: o.title,\n  severity: o.severity,\n  summary: o.summary,\n  steps_to_reproduce: (o.steps_to_reproduce || []).join(' | '),\n  impact: o.impact,\n  suggested_fix: o.suggested_fix,\n  chat_id: String(src.chat_id),\n  dedupe_key: src.dedupe_key,\n  execution_id: String($execution.id),\n  created_at_ist: ist,\n  input_sent_to_llm: src.clean_text,\n  telegram_text: text\n} }];"
+      },
+      "id": "f5a98ebb-b8ee-48d5-83c9-d9e3f55b07d2",
+      "name": "Format Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "value": "wm7Cmy4Q1ZbDbVpr",
+          "mode": "list",
+          "cachedResultName": "ngp048_reports",
+          "cachedResultUrl": "/projects/AfzxUiNiXl7ysuIr/datatables/wm7Cmy4Q1ZbDbVpr"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b439e0eb-1d7a-41fb-bee1-4992b7af053f",
+      "name": "Save Report (Data table)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1344,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Format Report').item.json.chat_id }}",
+        "text": "={{ $('Format Report').item.json.telegram_text }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "d5f72fff-efb4-48cc-b981-0ef970c6a862",
+      "name": "Send Report (Telegram)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1568,
+        400
+      ],
+      "webhookId": "38e2d3e8-5daa-41c1-9ec1-66d85cb04122",
+      "credentials": {
+        "telegramApi": {
+          "id": "NNQsDrBbvSTedoIT",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Sanitize (S5)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize (S5)": {
+      "main": [
+        [
+          {
+            "node": "Lookup Duplicate (F2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Duplicate (F2)": {
+      "main": [
+        [
+          {
+            "node": "Is New Finding?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New Finding?": {
+      "main": [
+        [
+          {
+            "node": "Count Reports",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Reports": {
+      "main": [
+        [
+          {
+            "node": "Bug Report Writer Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bug Report Writer Agent": {
+      "main": [
+        [
+          {
+            "node": "Format Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Bug Report Writer Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Bug Report Writer Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Report": {
+      "main": [
+        [
+          {
+            "node": "Save Report (Data table)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Report (Data table)": {
+      "main": [
+        [
+          {
+            "node": "Send Report (Telegram)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e85ac299-1047-4d73-b86f-02267ac13e23",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "21ef38e41a7b8ed78506e8d740dd3df0e010b6411dd3a4869d7ec44e38c874dc"
+  },
+  "nodeGroups": [],
+  "id": "6m6R0trOrEQuI9Rf",
+  "tags": []
+}
